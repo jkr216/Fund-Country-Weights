@@ -1,0 +1,130 @@
+---
+title: "Fund Country Weights"
+resource_files:
+- metrosData.RDat
+runtime: shiny_prerendered
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+
+---
+
+```{r setup, include = FALSE}
+# Load packages and initialize data here
+library(flexdashboard)
+library(dygraphs)
+library(leaflet)
+library(DT)
+library(data.table)
+
+```
+
+
+```{r data, cache = TRUE, include = FALSE}
+##load data
+load('worldFundCountryWeights.RDat')
+
+##build metros map
+EEMPal <- colorQuantile("Greens", world_fund_country_weights$EEM, n = 20)
+
+EEMPopup <- paste0("<strong>Country: </strong>", 
+                world_fund_country_weights$name,
+                "<br><strong> Country Weight: </strong>", 
+                world_fund_country_weights$EEM, "%")
+
+leaf_world_emerging <- leaflet(world_fund_country_weights) %>%
+  addProviderTiles("CartoDB.Positron") %>% 
+  setView(lng =  20, lat =  15, zoom = 2) %>%
+      addPolygons(stroke = FALSE, smoothFactor = 0.2, fillOpacity = .7,
+      color =~EEMPal(EEM), layerId = ~name, popup = EEMPopup)
+```
+
+
+Fund Weights with Dynamic Shading {data-orientation=rows}
+=====================================
+
+Column {.sidebar data-width=200}
+-------------------------------------
+  
+```{r, context = "render"}
+helpText("Choose a radio button to change the way the map is shaded.")
+
+radioButtons("fund", "Fund",
+               c("Emerging Markets ETF" = "EEM",
+                 "Total International Stock" = "international"))
+```
+
+Row {data-height=650}
+-------------------------------------
+
+### Fund Country Weights
+
+```{r, context = "render", echo = FALSE}
+
+leafletOutput("fundMap")
+```
+
+```{r, context = "server"}
+
+output$fundMap <- renderLeaflet({
+    leaf_world_emerging
+  })
+
+observeEvent(input$fund, {
+      #  let's create a new palette based on the input selected
+      indicator <- as.character(input$fund)
+      
+      Pal <- colorNumeric( 
+        palette = "Greens",
+        domain = world_fund_country_weights[[indicator]]
+        )
+      
+      dynamicPopup <- paste0("<strong>Country: </strong><br>", 
+                     world_fund_country_weights$name,
+                     "<br><strong> Country Weight: </strong>",
+                     world_fund_country_weights[[indicator]], "%"
+                    )
+      
+      leafletProxy( "fundMap", data = world_fund_country_weights) %>%
+        removeShape( layerId = ~name ) %>%
+        addProviderTiles("CartoDB.Positron") %>%   
+        addPolygons(stroke = TRUE, color = "black", weight = .4, opacity = 1.0, 
+                    smoothFactor = 0.5, fill = TRUE, fillColor = ~Pal(world_fund_country_weights[[indicator]]), 
+                    fillOpacity = .8, layerId = ~name, popup = dynamicPopup)  %>% 
+        addLegend(position = "bottomright", pal = Pal, values = world_fund_country_weights[[indicator]],
+              layerId = "legend", opacity = 1 )
+      
+    })
+
+```
+
+Row
+--------------------------
+
+### Companies Data Table 
+
+```{r, context = "render", echo = FALSE}
+dataTableOutput('table')
+```
+
+```{r, context = "server"}
+
+
+clickedCountry <- eventReactive(input$fundMap_shape_click, {
+     return(input$fundMap_shape_click$id)
+     })
+
+output$table <- renderDataTable({
+
+  df <- reactive({
+    x <- get(input$fund)
+  })
+  
+  df <- data.table(df())
+  subdf <- subset(df, Country == as.character(clickedCountry())) 
+  subdf$Country <- NULL
+  
+  datatable(head(subdf, n =20), fillContainer = TRUE, caption = as.character(clickedCountry()), 
+              options = list(dom = 't', pageLength = 20))
+})
+```

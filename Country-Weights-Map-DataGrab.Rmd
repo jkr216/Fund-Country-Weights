@@ -1,0 +1,208 @@
+---
+title: "Fund Country Weights"
+output: html_notebook
+---
+ 
+
+```{r setup, include = FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+```
+
+First, let's grab the fund data from [MCSI's homepage](https://www.ishares.com/us/products/244048/ishares-core-msci-total-international-stock-etf). We will use the read_csv() function from the readr package. We will title it international_fund since we'll be pulling in another fund later. Note that we had to skip the first 11 rows. Why???
+
+```{r, message = FALSE}
+
+international_fund <- read_csv("https://www.ishares.com/us/products/244048/ishares-core-msci-total-international-stock-etf/1467271812596.ajax?fileType=csv&fileName=IXUS_holdings&dataType=fund", 
+    skip = 11)
+```
+
+Alright, we have our fund data and now the wrangling begins. We are actually going to use this initial object to create two other objects: one will be merged with the spatial dataframe and one will be a standalone object to be loaded in our Shiny app. 
+
+```{r}
+
+international_country_weights <- international_fund %>% 
+  select(Country, `Weight (%)`) %>%
+  # Change some country naming conventions to match that of the spatial
+  # dataframe. 
+  mutate(Country = replace(Country, Country == "Russian Federation", "Russia"), 
+         Country = replace(Country, Country == "Korea (South)", "Korea"),
+         Country = replace(Country, Country == "KO", "Korea"),
+         Country = replace(Country, Country == "Czech Republic", "Czech Rep.")
+         ) %>%
+  group_by(Country) %>% 
+  summarise(international = sum(`Weight (%)`, na.rm = TRUE)) %>% 
+  # We change the column label from 'Country' to 'name' so that the column will have a common label 
+  # with our shapefile. 
+  rename(name = Country) %>% 
+  # remove any weightings that are 0 or countries named '-'
+  filter(international > 0) %>% 
+  filter(name != "-") %>% 
+  # Arrange in descending order so we can peek at the top holdings
+  arrange(desc(international))
+
+# Have a look. The top ten holdings are interesting - Japan, UK, Canada, China, France, Germany
+# Switzerland, Australia, Korea, Netherlands. 
+
+international_country_weights
+```
+
+
+```{r}
+emerging_market_fund <- read_csv("https://www.ishares.com/us/products/239637/ishares-msci-emerging-markets-etf/1467271812596.ajax?fileType=csv&fileName=EEM_holdings&dataType=fund", 
+    skip = 11)
+
+emerging_market_fund_country_weights <- emerging_market_fund %>% 
+  select(Country, `Weight (%)`) %>%
+  mutate(Country = replace(Country, Country == "Russian Federation", "Russia"), 
+         Country = replace(Country, Country == "Korea (South)", "Korea"),
+         Country = replace(Country, Country == "KO", "Korea"),
+         Country = replace(Country, Country == "Czech Republic", "Czech Rep.")
+         ) %>%
+  group_by(Country) %>% 
+  summarise(EEM = sum(`Weight (%)`, na.rm = TRUE)) %>% 
+  rename(name = Country) %>% 
+  filter(EEM > 0) %>% 
+  filter(name != "-") %>% 
+  arrange(desc(EEM))
+
+# Again, it's worth a peek. China, Korea and Taiwan are 51% of this fund. 
+
+emerging_market_fund_country_weights
+
+```
+
+```{r}
+
+EEM <- emerging_market_fund %>% 
+  select(Name, Country, Sector, `Weight (%)`, `Market Value`) %>% 
+  mutate(Country = replace(Country, Country == "Russian Federation", "Russia"), 
+         Country = replace(Country, Country == "Korea (South)", "Korea"),
+         Country = replace(Country, Country == "Czech Republic", "Czech Rep.")
+         ) %>% 
+  filter(`Weight (%)` > 0) %>% 
+  filter(Country != "-") 
+
+# Let's test it on Brazil to make sure it works.
+
+Brazil_companies <- EEM %>%
+  filter(Country == "Brazil") %>% 
+  ungroup() %>% 
+  select(-Country)
+```
+
+```{r}
+
+international <- international_fund %>% 
+  select(Name, Country, Sector, `Weight (%)`, `Market Value`) %>% 
+  mutate(Country = replace(Country, Country == "Russian Federation", "Russia"), 
+         Country = replace(Country, Country == "Korea (South)", "Korea"),
+         Country = replace(Country, Country == "Czech Republic", "Czech Rep.")
+         ) %>% 
+  filter(`Weight (%)` > 0) %>% 
+  filter(Country != "-") 
+
+#Let's test it on a country to make sure it works
+
+Brazil_companies <- international %>%
+  filter(Country == "Brazil") %>% 
+  ungroup() %>% 
+  select(-Country)
+
+```
+
+```{r}
+library(rgdal)
+library(rmapshaper)
+library(httr)
+
+tmp <- tempfile()
+
+httr::GET("http://www.naturalearthdata.com/http//www.naturalearthdata.com/download/50m/cultural/ne_50m_admin_0_countries.zip", write_disk(tmp))
+
+unzip(tmp, exdir = 'ne_50m_admin_0_countries')
+
+world <- readOGR("./ne_50m_admin_0_countries", 'ne_50m_admin_0_countries', verbose = FALSE)
+world <- ms_simplify(world)
+```
+
+
+```{r}
+library(sp)
+library(leaflet)
+# There's quite a bit of information in the 'data' section of this geospatial dataframe.
+# For the sake of brevity, let's look at just the first 6 countries, 
+# their GDP estimates and the stage of their economy.
+world@data['name']
+
+world_fund_country_weights <- merge(world, emerging_market_fund_country_weights, by = "name") 
+world_fund_country_weights <- merge(world_fund_country_weights, international_country_weights, by = "name")
+world_fund_country_weights@data['EEM']
+world_fund_country_weights@data['international']
+```
+
+```{r}
+save(world_fund_country_weights, EEM, international, file = "worldFundCountryWeights.RDat")
+```
+
+
+```{r}
+# Create a palette with different shades of blue for different
+# year-to-date performances. Previously, we shaded by 'world$gdp_md_est', now
+# we'll shade by 'world_etf$ytd'.
+
+EEMPal <- colorQuantile("Greens", world_fund_country_weights$EEM, n = 20)
+internationalPal <-  colorQuantile("Purples", world_fund_country_weights$international, n = 20)
+
+```
+
+
+The new shading is nice, but let’s also have the popup display the exact year-to-date performance percentage for any detail-oriented users.
+
+```{r}
+# Create a popup that displays the year-to-date performance.
+
+EEMPopup <- paste0("<strong>Country: </strong>", 
+                world_fund_country_weights$name,
+                "<br><strong> Country Weight: </strong>", 
+                world_fund_country_weights$EEM, "%")
+
+internationalPopup <- paste0("<strong>Country: </strong>", 
+                world_fund_country_weights$name,
+                "<br><strong> Country Weight: </strong>", 
+                world_fund_country_weights$international, "%")
+```
+ 
+Now we’ll build another map that uses the year-to-date color scheme and popup, but we will make one more massively important change: we will change ‘layerId = ~name’ to ‘layerId = ~ticker’ to create a map layer of tickers.
+
+Why is this massively important? When we eventually create a Shiny app, we want to pass ticker symbols to ‘getSymbols’ based on a user click. The ‘layerId’ is how we’ll do that:  when a user clicks on a country, we capture the ‘layerId’, which is a ticker name that we can pass to ‘getSymbols.’ But that is getting ahead of ourselves. For now, here is the new map:
+
+```{r}
+
+leaf_world_emerging <- leaflet(world_fund_country_weights) %>%
+  addProviderTiles("CartoDB.Positron") %>% 
+  setView(lng =  20, lat =  15, zoom = 2) %>%
+      addPolygons(stroke = FALSE, smoothFactor = 0.2, fillOpacity = .7,
+                  
+      # The next line of code is really important for creating the map we want to use later.       
+      
+      color =~EEMPal(EEM), layerId = ~name, popup = EEMPopup)
+
+leaf_world_international <- leaflet(world_fund_country_weights) %>%
+  addProviderTiles("CartoDB.Positron") %>% 
+  setView(lng =  20, lat =  15, zoom = 2) %>%
+      addPolygons(stroke = FALSE, smoothFactor = 0.2, fillOpacity = .7,
+                  
+      # The next line of code is really important for creating the map we want to use later.       
+      
+      color =~internationalPal(international), layerId = ~name, popup = internationalPopup)
+
+leaf_world_emerging
+leaf_world_international
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
