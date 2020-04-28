@@ -1,0 +1,12 @@
+---
+title: "table"
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    source_code: embed
+---
+
+```{r}
+renderTable({ head( iris, n = 6 )})
+```
+

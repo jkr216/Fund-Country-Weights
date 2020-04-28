@@ -2,11 +2,10 @@
 title: "Fund Country Weights"
 resource_files:
 - worldFundCountryWeights.RDat
-runtime: shiny
+runtime: shiny_prerendered
 output:
   flexdashboard::flex_dashboard:
     orientation: rows
-    source_code: embed
 
 ---
 
@@ -18,30 +17,26 @@ library(leaflet)
 library(DT)
 library(data.table)
 library(dplyr)
-library(sf)
-library(rgeos)
+```
+
+
+```{r data, cache = TRUE, include = FALSE}
 ##load data
 load('worldFundCountryWeights.RDat')
 
-emerging_marketPopup <- 
-  paste0("<strong>Country: </strong>", 
+##build  map
+emerging_marketPal <- colorQuantile("Purples", world_fund_country_weights$emerging_market, n = 20)
+
+emerging_marketPopup <- paste0("<strong>Country: </strong>", 
                 world_fund_country_weights$name,
                 "<br><strong> Country Weight: </strong>", 
                 world_fund_country_weights$emerging_market, "%")
 
-# Let's create two palettes so we can look at two variants. This is pure aesthetics, but the Notebook is the
-# place for aesthetics.
-
-emerging_marketPalGreen <- 
-  colorQuantile("Greens", world_fund_country_weights$emerging_market, n = 20)
-
-leaf_world_emerging_greens <- leaflet(world_fund_country_weights) %>%
+leaf_world_emerging <- leaflet(world_fund_country_weights) %>%
   addProviderTiles("CartoDB.Positron") %>% 
   setView(lng =  20, lat =  15, zoom = 2) %>%
       addPolygons(stroke = FALSE, smoothFactor = 0.2, fillOpacity = .7,
-                  color = ~emerging_marketPalGreen(emerging_market), 
-                  layerId = ~name, popup = emerging_marketPopup)
-
+      color =~emerging_marketPal(emerging_market), layerId = ~name, popup = emerging_marketPopup)
 ```
 
 
@@ -51,13 +46,13 @@ Fund Weights with Dynamic Shading {data-orientation=rows}
 Column {.sidebar data-width=200}
 -------------------------------------
   
-```{r}
+```{r, context = "render"}
 helpText("Choose a radio button to change the way the map is shaded.")
 
 radioButtons("fund", "Fund",
                c("Emerging Markets ETF" = "emerging_market",
                  "Total International ETF" = "international",
-                 "Global Infrastructure ETF" = "infrastructure",
+                 "International Infrastructure ETF" = "infrastructure",
                  "Asia Ex Japan ETF" = "asia_ex_japan", 
                  "Europe ETF" = "europe"))
 ```
@@ -67,22 +62,24 @@ Row {data-height=650}
 
 ### Fund Country Weights
 
-```{r, echo = FALSE}
+```{r, context = "render", echo = FALSE}
 
 leafletOutput("fundMap")
+```
+
+```{r, context = "server"}
 
 output$fundMap <- renderLeaflet({
-    leaf_world_emerging_greens
+    leaf_world_emerging
   })
 
 observeEvent(input$fund, {
       #  let's create a new palette based on the input selected
       indicator <- as.character(input$fund)
       
-      Pal <- colorQuantile( 
-        palette = "Purples",
-        domain = world_fund_country_weights[[indicator]],
-        n = 20
+      Pal <- colorNumeric( 
+        palette = "Greens",
+        domain = world_fund_country_weights[[indicator]]
         )
       
       dynamicPopup <- paste0("<strong>Country: </strong><br>", 
@@ -109,56 +106,41 @@ Row {.tabset .tabset-fade}
 
 ###  Data Table 
 
-```{r, echo = FALSE}
+```{r, context = "render", echo = FALSE}
 dataTableOutput('table')
+```
+
+```{r, context = "server"}
 
 clickedCountry <- eventReactive(input$fundMap_shape_click, {
      return(input$fundMap_shape_click$id)
      })
 
 output$table <- renderDataTable({
-  validate(need(input$fundMap_shape_click$id != "", "Please click on a country to display the company level data."))
-# A repeat from above - get the fund object based on the radio button. 
-  fund <- reactive({
-    fund <- get(input$fund)
-    fund[4] <- fund[4]/100
-    fund
-  }) 
-  
-# Let's use datatable because I like giving the user the ability to filter on columns. 
-  
-  fund <- data.table(fund())
-  
-  # Subset the table by clickedCountry. 
-  
-  fund_subsetted <- subset(fund, Country == as.character(clickedCountry())) 
 
-  # An aesthetic decision here: I don't want to display the column of countries because 
-  # I am going to add a caption with that information. 
+  df <- reactive({
+    x <- get(input$fund)
+    x[4] <- x[4]/100
+    x
+  })
   
-  fund_subsetted$Country <- NULL
+  df <- data.table(df())
+  subdf <- subset(df, Country == as.character(clickedCountry())) 
+  subdf$Country <- NULL
   
-  # The final datatable object that will be displayed. Note the nice 
-  # formatPercentage function which allows us to 
-  # add a '%' to the Weight column.
-  
-  datatable(head(fund_subsetted, n =20), fillContainer = TRUE,
-            caption = as.character(clickedCountry()),
-            # The next two lines are purely for aesthetics. They add a
-            # border and stripe to each cell and then center the column values. 
-            # If you don't like how that looks, comment these out and re-run.
-            class = 'cell-border stripe', 
-            options = list(dom = 't', pageLength = 20)) %>% 
-    # I want the Weight column to include a '%' - again, an aesthetic preference.
+  datatable(head(subdf, n =20), fillContainer = TRUE, class = 'cell-border stripe', 
+            caption = as.character(clickedCountry()), options = list(dom = 't', pageLength = 20)) %>% 
     formatPercentage(3, 2)
 })
 ```
 
 ### Country Weights
 
-```{r, echo = FALSE}
+```{r, context = "render", echo = FALSE}
 dataTableOutput('countryWeightsTable')
+```
 
+```{r, context = "server"}
 
 output$countryWeightsTable <- renderDataTable({
 
@@ -173,5 +155,13 @@ fund_countries <-
             class = 'cell-border stripe', 
             options = list(columnDefs = list(list(className = 'dt-center', targets = 0:2))))  %>% 
   formatPercentage(2, 2) 
+#%>%  formatStyle(2, textAlign = 'center')
+  
+#datatable(head(fund, n =20), colnames = c('Country', 'Weight(%)'), fillContainer = TRUE,
+ #            options = list(dom = 't', pageLength = 20))
+#head(fund(), n = 6, digits = 2)
+#
 })
+#, striped = TRUE, bordered = TRUE,  
+ #                hover = TRUE, width = '10cm')
 ```
